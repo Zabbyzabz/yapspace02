@@ -11,8 +11,9 @@ html,body{width:100%;height:100%;background:#fff;color:#000;font-family:'Courier
 .left{width:55%;height:100vh;overflow-y:scroll;scrollbar-width:none;}
 .left::-webkit-scrollbar{display:none;}
 .yap-wrap{padding:64px 48px 0 80px;max-width:660px;}
-.yap-wrap p{font-size:17px;line-height:2.4;letter-spacing:0.02em;margin-bottom:1.5em;}
-.word,.trigger,.motif,.checklist-trig{display:inline;opacity:0;will-change:opacity;}
+.yap-wrap p{font-size:17px;line-height:2.4;letter-spacing:0.02em;margin-bottom:1.5em;contain:layout style paint;}
+.word,.trigger,.motif,.checklist-trig{display:inline;opacity:0;}
+.word.revealing,.trigger.revealing,.motif.revealing,.checklist-trig.revealing{will-change:opacity;}
 .no-mic .word,.no-mic .trigger,.no-mic .motif,.no-mic .checklist-trig{opacity:0.6!important;}
 .trigger{text-decoration:underline;text-underline-offset:3px;text-decoration-style:dotted;text-decoration-color:rgba(0,0,0,0.3);cursor:none;}
 .motif{text-decoration:underline;text-underline-offset:3px;text-decoration-style:dashed;text-decoration-color:rgba(180,60,60,0.45);cursor:none;}
@@ -27,6 +28,14 @@ html,body{width:100%;height:100%;background:#fff;color:#000;font-family:'Courier
 .checklist-popup-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:1px solid #000;padding-bottom:8px;}
 .checklist-popup-head span{font-size:10px;letter-spacing:0.18em;text-transform:uppercase;}
 #checklistClose{cursor:pointer;font-size:13px;background:none;border:none;padding:0 4px;}
+
+.nag-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.15);opacity:0;pointer-events:none;transition:opacity 0.3s ease;}
+.nag-overlay.show{opacity:1;pointer-events:auto;}
+.nag-box{position:relative;background:#fdfdfa;border:1px solid #000;box-shadow:0 8px 28px rgba(0,0,0,0.15);padding:28px 30px 24px;max-width:280px;font-family:'Courier New',monospace;text-align:center;transform:translateY(-8px);transition:transform 0.3s ease;}
+.nag-overlay.show .nag-box{transform:translateY(0);}
+.nag-kaomoji{font-size:22px;line-height:1;margin-bottom:14px;letter-spacing:0.02em;}
+.nag-text{font-size:12.5px;line-height:1.7;letter-spacing:0.02em;}
+.nag-close{position:absolute;top:6px;right:8px;cursor:pointer;background:none;border:none;font-size:13px;font-family:'Courier New',monospace;line-height:1;padding:4px;}
 .cl-heading{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;margin:16px 0 6px;color:#333;}
 .cl-heading:first-child{margin-top:0;}
 .cl-item{font-size:11.5px;line-height:1.7;display:flex;align-items:flex-start;gap:8px;color:#222;}
@@ -94,6 +103,13 @@ header{position:fixed;top:0;left:0;right:0;z-index:100;height:30px;display:flex;
 <div class="checklist-popup" id="checklistPopup">
   <div class="checklist-popup-head"><span>habit / habits</span><button id="checklistClose">close ✕</button></div>
   <div id="checklistBody"></div>
+</div>
+<div class="nag-overlay" id="nagOverlay">
+  <div class="nag-box">
+    <button class="nag-close" id="nagClose">✕</button>
+    <div class="nag-kaomoji">○(´｡• ᵕ •｡`)</div>
+    <div class="nag-text">allow pop up please :3</div>
+  </div>
 </div>
 <div class="cursor-dot" id="dot"></div>
 <div class="mic-dot" id="micDot"></div>
@@ -778,9 +794,12 @@ wordMeta.forEach((wd,idx)=>{
 
 function setOp(idx,op,dur){
   copySpans.forEach(s=>{
-    if(!s[idx])return;
-    s[idx].style.transition=`opacity ${dur}s ease`;
-    s[idx].style.opacity=op;
+    const el=s[idx];if(!el)return;
+    el.classList.add('revealing');
+    el.style.transition=`opacity ${dur}s ease`;
+    el.style.opacity=op;
+    clearTimeout(el._rvTid);
+    el._rvTid=setTimeout(()=>el.classList.remove('revealing'),dur*1000+80);
   });
 }
 
@@ -855,6 +874,13 @@ document.getElementById('checklistClose').addEventListener('click',hideChecklist
 document.addEventListener('click',(e)=>{
   if(checklistPopup.classList.contains('show')&&!checklistPopup.contains(e.target))hideChecklist();
 });
+
+// ─── NAG OVERLAY (shows once on load, dismissible) ───
+const nagOverlay=document.getElementById('nagOverlay');
+function hideNag(){nagOverlay.classList.remove('show');}
+document.getElementById('nagClose').addEventListener('click',hideNag);
+nagOverlay.addEventListener('click',(e)=>{if(e.target===nagOverlay)hideNag();});
+window.addEventListener('load',()=>{setTimeout(()=>nagOverlay.classList.add('show'),400);});
 
 // ─── MIC ───
 const micDot=document.getElementById('micDot');
@@ -934,20 +960,27 @@ function renderFrame(){
   });
 }
 
-// Glitch: runs independently, corrupts visible words based on volume
+// Glitch: runs independently, corrupts a capped sample of visible words based on volume
+// set GLITCH_ENABLED=false to turn the corruption effect off entirely
+const GLITCH_ENABLED=true;
+const GLITCH_MAX_PER_TICK=14; // cap simultaneous glitching words regardless of how much is visible
 setInterval(()=>{
+  if(!GLITCH_ENABLED)return;
   if(vol<NOISE_FLOOR)return;
   const glitchRate=0.03+vol*0.12; // more volume = more glitch
-  visibleWordSet.forEach(idx=>{
-    if(wordOpacity[idx]<0.1)return;
+  const pool=[...visibleWordSet];
+  const n=Math.min(GLITCH_MAX_PER_TICK,pool.length);
+  for(let k=0;k<n;k++){
+    const idx=pool[~~(Math.random()*pool.length)];
+    if(wordOpacity[idx]<0.1)continue;
     const wd=wordMeta[idx];
     if(Math.random()<glitchRate){
       const dur=50+Math.random()*(200-vol*150); // loud = shorter glitch flash
       copySpans.forEach(s=>{if(s[idx])s[idx].textContent=corrupt(wd.orig);});
       setTimeout(()=>{copySpans.forEach(s=>{if(s[idx])s[idx].textContent=wd.orig;});},dur);
     }
-  });
-},100);
+  }
+},150);
 
 async function initMic(){
   try{
@@ -988,16 +1021,24 @@ initMic();
 const dotEl=document.getElementById('dot');
 const POOL=22;const pool=[];let pidx=0,lx=0,ly=0;
 for(let i=0;i<POOL;i++){const img=document.createElement('img');img.className='trail-img';img.src=TRAIL[i%TRAIL.length];document.body.appendChild(img);pool.push({el:img,tid:null});}
+let mmPending=false,lastMX=0,lastMY=0;
 document.addEventListener('mousemove',e=>{
-  const{clientX:x,clientY:y}=e;dotEl.style.left=x+'px';dotEl.style.top=y+'px';
-  if(Math.hypot(x-lx,y-ly)>36){
-    const slot=pool[pidx++%POOL];clearTimeout(slot.tid);
-    slot.el.src=TRAIL[~~(Math.random()*TRAIL.length)];
-    const sz=28+Math.random()*32;
-    slot.el.style.cssText=`width:${sz}px;height:${sz}px;left:${x}px;top:${y}px;opacity:0.85;transition:opacity 0.2s ease;`;
-    slot.tid=setTimeout(()=>{slot.el.style.opacity='0';},600+Math.random()*1000);lx=x;ly=y;
-  }
-});
+  lastMX=e.clientX;lastMY=e.clientY;
+  if(mmPending)return;
+  mmPending=true;
+  requestAnimationFrame(()=>{
+    mmPending=false;
+    const x=lastMX,y=lastMY;
+    dotEl.style.left=x+'px';dotEl.style.top=y+'px';
+    if(Math.hypot(x-lx,y-ly)>36){
+      const slot=pool[pidx++%POOL];clearTimeout(slot.tid);
+      slot.el.src=TRAIL[~~(Math.random()*TRAIL.length)];
+      const sz=28+Math.random()*32;
+      slot.el.style.cssText=`width:${sz}px;height:${sz}px;left:${x}px;top:${y}px;opacity:0.85;transition:opacity 0.2s ease;`;
+      slot.tid=setTimeout(()=>{slot.el.style.opacity='0';},600+Math.random()*1000);lx=x;ly=y;
+    }
+  });
+},{passive:true});
 </script>
 </body>
 </html>
