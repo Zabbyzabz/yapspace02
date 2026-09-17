@@ -12,7 +12,8 @@ html,body{width:100%;height:100%;background:#fff;color:#000;font-family:'Courier
 .left::-webkit-scrollbar{display:none;}
 .yap-wrap{padding:64px 48px 0 80px;max-width:660px;}
 .yap-wrap p{font-size:17px;line-height:2.4;letter-spacing:0.02em;margin-bottom:1.5em;}
-.word,.trigger{display:inline;opacity:0;will-change:opacity;}
+.word,.trigger,.motif,.checklist-trig{display:inline;opacity:0;will-change:opacity;}
+.no-mic .word,.no-mic .trigger,.no-mic .motif,.no-mic .checklist-trig{opacity:0.6!important;}
 .trigger{text-decoration:underline;text-underline-offset:3px;text-decoration-style:dotted;text-decoration-color:rgba(0,0,0,0.3);cursor:none;}
 .motif{text-decoration:underline;text-underline-offset:3px;text-decoration-style:dashed;text-decoration-color:rgba(180,60,60,0.45);cursor:none;}
 .word-popup{position:fixed;z-index:500;pointer-events:none;opacity:0;transition:opacity 0.25s ease;transform:translate(-50%,-110%);}
@@ -730,8 +731,10 @@ copySpans.push(spansA,spansB,spansC);
 
 // ─── WIRE UP TRIGGERS + MOTIF JUMP-LINKS (all 3 copies, not just copyA) ───
 const motifByGroup={};
+const sectionToIndices={};
 wordMeta.forEach((wd,idx)=>{
   if(wd.isMotif)(motifByGroup[wd.motifGroup]=motifByGroup[wd.motifGroup]||[]).push(idx);
+  (sectionToIndices[wd.secIdx]=sectionToIndices[wd.secIdx]||[]).push(idx);
 });
 
 function jumpMotif(group,fromIdx,copyIdx){
@@ -781,9 +784,10 @@ function setOp(idx,op,dur){
   });
 }
 
-// ─── VIEWPORT ───
+// ─── VIEWPORT (cached — only recomputed on scroll, never per animation frame) ───
 const leftEl=document.getElementById('left');
-function getVisibleSections(){
+let visibleWordSet=new Set();
+function updateVisibleSections(){
   const st=leftEl.scrollTop;
   const sb=st+leftEl.clientHeight;
   const vis=new Set();
@@ -796,7 +800,9 @@ function getVisibleSections(){
     }
   });
   if(vis.size===0)sections.forEach((_,i)=>vis.add(i));
-  return vis;
+  const ws=new Set();
+  vis.forEach(si=>{(sectionToIndices[si]||[]).forEach(i=>ws.add(i));});
+  visibleWordSet=ws;
 }
 
 // ─── SCROLL ───
@@ -810,8 +816,10 @@ leftEl.addEventListener('scroll',()=>{
   const p=(leftEl.scrollTop%h)/h;
   pctEl.textContent=Math.round(p*100)+'%';
   showSlot(Math.floor(p*IMGS.length));
+  updateVisibleSections();
 },{passive:true});
-window.addEventListener('load',()=>{leftEl.scrollTop=copyA.offsetHeight;});
+window.addEventListener('load',()=>{leftEl.scrollTop=copyA.offsetHeight;requestAnimationFrame(updateVisibleSections);});
+updateVisibleSections();
 
 // ─── POPUP (image or looping video) ───
 const popup=document.getElementById('wordPopup'),popupImg=document.getElementById('popupImg'),popupVid=document.getElementById('popupVid');
@@ -880,12 +888,18 @@ function smoothstep(edge0,edge1,x){
 // per-word current displayed opacity (tracked to avoid redundant sets)
 const wordOpacity=new Float32Array(wordMeta.length).fill(0);
 
-function renderFrame(){
-  const vis=getVisibleSections();
-  const active=vol>NOISE_FLOOR;
+// "active" = currently visible, or still fading out after scrolling away.
+// Bounds per-frame work to a few hundred words at most instead of the whole doc.
+const activeIndices=new Set();
 
-  wordMeta.forEach((wd,idx)=>{
-    const inView=vis.has(wd.secIdx);
+function renderFrame(){
+  const active=vol>NOISE_FLOOR;
+  const toProcess=new Set(visibleWordSet);
+  activeIndices.forEach(i=>toProcess.add(i));
+
+  toProcess.forEach(idx=>{
+    const wd=wordMeta[idx];
+    const inView=visibleWordSet.has(idx);
 
     let targetOp;
     if(!active||!inView){
@@ -899,7 +913,10 @@ function renderFrame(){
     }
 
     const diff=Math.abs(targetOp-wordOpacity[idx]);
-    if(diff<0.005)return; // skip tiny changes
+    if(diff<0.005){
+      if(targetOp<0.01)activeIndices.delete(idx);
+      return; // skip tiny changes
+    }
 
     // transition speed: loud = fast snap, soft = slow creep
     // when going UP: speed driven by vol (loud=0.05s, soft=0.6s)
@@ -913,18 +930,17 @@ function renderFrame(){
 
     wordOpacity[idx]=targetOp;
     setOp(idx,targetOp,dur);
+    if(targetOp>0.01||inView)activeIndices.add(idx); else activeIndices.delete(idx);
   });
 }
 
 // Glitch: runs independently, corrupts visible words based on volume
-const glitchState=new Uint8Array(wordMeta.length).fill(0);
 setInterval(()=>{
   if(vol<NOISE_FLOOR)return;
-  const vis=getVisibleSections();
   const glitchRate=0.03+vol*0.12; // more volume = more glitch
-  wordMeta.forEach((wd,idx)=>{
-    if(!vis.has(wd.secIdx))return;
+  visibleWordSet.forEach(idx=>{
     if(wordOpacity[idx]<0.1)return;
+    const wd=wordMeta[idx];
     if(Math.random()<glitchRate){
       const dur=50+Math.random()*(200-vol*150); // loud = shorter glitch flash
       copySpans.forEach(s=>{if(s[idx])s[idx].textContent=corrupt(wd.orig);});
@@ -961,8 +977,9 @@ async function initMic(){
     }
     loop();
   } catch {
-    // no mic: all words at 60%
-    wordMeta.forEach((_,i)=>{wordOpacity[i]=0.6;setOp(i,0.6,0.5);});
+    // no mic: all words at 60% — one CSS rule instead of ~44k individual style writes
+    document.body.classList.add('no-mic');
+    wordOpacity.fill(0.6);
   }
 }
 initMic();
